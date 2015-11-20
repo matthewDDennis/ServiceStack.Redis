@@ -241,7 +241,11 @@ namespace ServiceStack.Redis
 
                 inActiveClient.NamespacePrefix = NamespacePrefix;
 
-                inActiveClient.Db = Db;
+                //Reset database to default if changed
+                if (inActiveClient.Db != Db)
+                {
+                    inActiveClient.Db = Db;
+                }
 
                 return inActiveClient;
             }
@@ -262,21 +266,14 @@ namespace ServiceStack.Redis
                 var nextHost = ReadWriteHosts[nextHostIndex];
                 for (var i = nextHostIndex; i < writeClients.Length; i += ReadWriteHosts.Count)
                 {
-                    if (writeClients[i] != null && !writeClients[i].Active && !writeClients[i].HadExceptions)
+                    var client = writeClients[i];
+
+                    if (client != null && !client.Active && !client.HadExceptions && !client.HasDataAvailable)
                         return writeClients[i];
-                    else if (writeClients[i] == null || writeClients[i].HadExceptions)
+
+                    else if (client == null || !client.Active) // if true, null or has exceptions or data
                     {
-                        if (writeClients[i] != null)
-                            writeClients[i].DisposeConnection();
-                        var client = RedisClientFactory.CreateRedisClient(nextHost.Host, nextHost.Port);
-
-                        if (nextHost.RequiresAuth)
-                            client.Password = nextHost.Password;
-
-                        client.Id = RedisClientCounter++;
-                        client.ClientManager = this;
-                        client.NamespacePrefix = NamespacePrefix;
-                        client.ConnectionFilter = ConnectionFilter;
+                        client = ReplaceClient(nextHost, client);
 
                         writeClients[i] = client;
 
@@ -285,6 +282,23 @@ namespace ServiceStack.Redis
                 }
             }
             return null;
+        }
+
+        private RedisClient ReplaceClient(RedisEndPoint nextHost, RedisClient client)
+        {
+            if (client != null)
+                client.DisposeConnection();
+
+            client = RedisClientFactory.CreateRedisClient(nextHost.Host, nextHost.Port);
+
+            if (nextHost.RequiresAuth)
+                client.Password = nextHost.Password;
+
+            client.Id = RedisClientCounter++;
+            client.ClientManager = this;
+            client.NamespacePrefix = NamespacePrefix;
+            client.ConnectionFilter = ConnectionFilter;
+            return client;
         }
 
         /// <summary>
@@ -333,7 +347,11 @@ namespace ServiceStack.Redis
 
                 inActiveClient.NamespacePrefix = NamespacePrefix;
 
-                inActiveClient.Db = Db;
+                //Reset database to default if changed
+                if (inActiveClient.Db != Db)
+                {
+                    inActiveClient.Db = Db;
+                }
 
                 return inActiveClient;
             }
@@ -354,19 +372,14 @@ namespace ServiceStack.Redis
                 var nextHost = ReadOnlyHosts[nextHostIndex];
                 for (var i = nextHostIndex; i < readClients.Length; i += ReadOnlyHosts.Count)
                 {
-                    if (readClients[i] != null && !readClients[i].Active && !readClients[i].HadExceptions)
-                        return readClients[i];
-                    else if (readClients[i] == null || readClients[i].HadExceptions)
+                    var client = readClients[i];
+
+                    if (client != null && !client.Active && !client.HadExceptions && !client.HasDataAvailable)
+                        return writeClients[i];
+
+                    else if (client == null || !client.Active ) // if true, null or has exceptions or data
                     {
-                        if (readClients[i] != null)
-                            readClients[i].DisposeConnection();
-                        var client = RedisClientFactory.CreateRedisClient(nextHost.Host, nextHost.Port);
-
-                        if (nextHost.RequiresAuth)
-                            client.Password = nextHost.Password;
-
-                        client.ClientManager = this;
-                        client.ConnectionFilter = ConnectionFilter;
+                        client = ReplaceClient(nextHost, client);
 
                         readClients[i] = client;
 

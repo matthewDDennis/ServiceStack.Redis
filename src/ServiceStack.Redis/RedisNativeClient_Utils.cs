@@ -96,6 +96,14 @@ namespace ServiceStack.Redis
             return sb.ToString();
         }
 
+        public bool HasDataAvailable
+        {
+            get
+            {
+                return socket != null && socket.Available > 0;
+            }
+        }
+
         public bool IsSocketConnected()
         {
             var part1 = socket.Poll(1000, SelectMode.SelectRead);
@@ -199,15 +207,22 @@ namespace ServiceStack.Redis
         {
             if (!AssertConnectedSocket()) return false;
 
-            CmdLog(cmdWithBinaryArgs);
+            try
+            {
+                CmdLog(cmdWithBinaryArgs);
 
-            //Total command lines count
-            WriteAllToSendBuffer(cmdWithBinaryArgs);
+                //Total command lines count
+                WriteAllToSendBuffer(cmdWithBinaryArgs);
 
-            //pipeline will handle flush, if pipelining is turned on
-            if (Pipeline == null)
-                return FlushSendBuffer();
-          
+                //pipeline will handle flush, if pipelining is turned on
+                if (Pipeline == null)
+                    FlushSendBuffer();
+            }
+            catch (SocketException ex)
+            {
+                cmdBuffer.Clear();
+                return HandleSocketException(ex);
+            }
             return true;
         }
 
@@ -264,35 +279,27 @@ namespace ServiceStack.Redis
             currentBufferIndex = 0;
         }
 
-        public bool FlushSendBuffer()
- 	{
- 		try
- 		{
- 			if (currentBufferIndex > 0)
- 				PushCurrentBuffer();
- 
- 			if (!Env.IsMono)
- 			{
- 				socket.Send(cmdBuffer); //Optimized for Windows
- 			}
- 			else
- 			{
- 			//Sendling IList<ArraySegment> Throws 'Message to Large' SocketException in Mono
- 				foreach (var segment in cmdBuffer)
- 				{
- 					var buffer = segment.Array;
- 					socket.Send(buffer, segment.Offset, segment.Count, SocketFlags.None);
- 				}
- 			}
- 			ResetSendBuffer();
- 		}
- 		catch (SocketException ex)
- 		{
- 			cmdBuffer.Clear();
- 			return HandleSocketException(ex);
- 		}
- 		return true;
- 	}
+        public void FlushSendBuffer()
+        {
+            if (currentBufferIndex > 0)
+                PushCurrentBuffer();
+
+            if (!Env.IsMono)
+            {
+                socket.Send(cmdBuffer); //Optimized for Windows
+            }
+            else
+            {
+                //Sendling IList<ArraySegment> Throws 'Message to Large' SocketException in Mono
+                foreach (var segment in cmdBuffer)
+                {
+                    var buffer = segment.Array;
+                    socket.Send(buffer, segment.Offset, segment.Count, SocketFlags.None);
+                }
+            }
+            ResetSendBuffer();
+        }
+
         /// <summary>
         /// reset buffer index in send buffer
         /// </summary>
@@ -309,7 +316,21 @@ namespace ServiceStack.Redis
 
         private int SafeReadByte()
         {
-            return Bstream.ReadByte();
+            // if the read throws an exception for any reason the connection and or the data stream
+            // are in an unstable state.  Mark the client as having had an Exception so that its
+            // connection will be closed and recreated when pulled from the Pool.
+            // Even if the Exception is a timeout, then it is possible for the data to arrive later if
+            // processing on the Redis Server was delayed.  In this case, the data stream is out of
+            // sync and needs to be killed and recreated.
+            try
+            {
+                return Bstream.ReadByte();
+            }
+            catch
+            {
+                this.HadExceptions = true;
+                throw;
+            }
         }
 
         protected void SendExpectSuccess(params byte[][] cmdWithBinaryArgs)
